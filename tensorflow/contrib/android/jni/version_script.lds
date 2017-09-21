@@ -4,6 +4,8 @@ VERS_1.0 {
     Java_*;
     JNI_OnLoad;
     JNI_OnUnload;
+    *TF_*;
+    *TFE_*;
 
   # Hide everything else.
   local:
