@@ -14,7 +14,17 @@
 # ==============================================================================
 """The TFGAN project provides a lightweight GAN training/testing framework.
 
-See examples in `tensorflow_models` for details on how to use.
+This file contains the core helper functions to create and train a GAN model.
+See the README or examples in `tensorflow_models` for details on how to use.
+
+TFGAN training occurs in four steps:
+1) Create a model
+2) Add a loss
+3) Create train ops
+4) Run the train ops
+
+The functions in this file are organized around these four steps. Each function
+corresponds to one of the steps.
 """
 
 from __future__ import absolute_import
@@ -26,7 +36,6 @@ from tensorflow.contrib.gan.python import losses as tfgan_losses
 from tensorflow.contrib.gan.python import namedtuples
 from tensorflow.contrib.slim.python.slim import learning as slim_learning
 from tensorflow.contrib.training.python.training import training
-from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
@@ -43,23 +52,16 @@ __all__ = [
     'gan_model',
     'infogan_model',
     'acgan_model',
+    'cyclegan_model',
     'gan_loss',
+    'cyclegan_loss',
     'gan_train_ops',
     'gan_train',
     'get_sequential_train_hooks',
     'get_joint_train_hooks',
     'get_sequential_train_steps',
+    'RunTrainOpsHook',
 ]
-
-
-def _convert_tensor_or_l_or_d(tensor_or_l_or_d):
-  """Convert input, list of inputs, or dictionary of inputs to Tensors."""
-  if isinstance(tensor_or_l_or_d, (list, tuple)):
-    return [ops.convert_to_tensor(x) for x in tensor_or_l_or_d]
-  elif isinstance(tensor_or_l_or_d, dict):
-    return {k: ops.convert_to_tensor(v) for k, v in tensor_or_l_or_d.items()}
-  else:
-    return ops.convert_to_tensor(tensor_or_l_or_d)
 
 
 def gan_model(
@@ -132,20 +134,6 @@ def gan_model(
       discriminator_variables,
       dis_scope,
       discriminator_fn)
-
-
-def _validate_distributions(distributions_l, noise_l):
-  if not isinstance(distributions_l, (tuple, list)):
-    raise ValueError('`predicted_distributions` must be a list. Instead, found '
-                     '%s.' % type(distributions_l))
-  for dist in distributions_l:
-    if not isinstance(dist, ds.Distribution):
-      raise ValueError('Every element in `predicted_distributions` must be a '
-                       '`tf.Distribution`. Instead, found %s.' % type(dist))
-  if len(distributions_l) != len(noise_l):
-    raise ValueError('Length of `predicted_distributions` %i must be the same '
-                     'as the length of structured noise %i.' %
-                     (len(distributions_l), len(noise_l)))
 
 
 def infogan_model(
@@ -229,17 +217,8 @@ def infogan_model(
       disc_scope,
       lambda x, y: discriminator_fn(x, y)[0],  # conform to non-InfoGAN API
       structured_generator_inputs,
-      predicted_distributions)
-
-
-def _validate_acgan_discriminator_outputs(discriminator_output):
-  try:
-    a, b = discriminator_output
-  except (TypeError, ValueError):
-    raise TypeError(
-        'A discriminator function for ACGAN must output a tuple '
-        'consisting of (discrimination logits, classification logits).')
-  return a, b
+      predicted_distributions,
+      discriminator_fn)
 
 
 def acgan_model(
@@ -253,6 +232,7 @@ def acgan_model(
     # Optional scopes.
     generator_scope='Generator',
     discriminator_scope='Discriminator',
+    # Options.
     check_shapes=True):
   """Returns an ACGANModel contains all the pieces needed for ACGAN training.
 
@@ -299,14 +279,16 @@ def acgan_model(
     generator_inputs = _convert_tensor_or_l_or_d(generator_inputs)
     generated_data = generator_fn(generator_inputs)
   with variable_scope.variable_scope(discriminator_scope) as dis_scope:
-    (discriminator_gen_outputs, discriminator_gen_classification_logits
-    ) = _validate_acgan_discriminator_outputs(
-        discriminator_fn(generated_data, generator_inputs))
+    with ops.name_scope(dis_scope.name+'/generated/'):
+      (discriminator_gen_outputs, discriminator_gen_classification_logits
+      ) = _validate_acgan_discriminator_outputs(
+          discriminator_fn(generated_data, generator_inputs))
   with variable_scope.variable_scope(dis_scope, reuse=True):
-    real_data = ops.convert_to_tensor(real_data)
-    (discriminator_real_outputs, discriminator_real_classification_logits
-    ) = _validate_acgan_discriminator_outputs(
-        discriminator_fn(real_data, generator_inputs))
+    with ops.name_scope(dis_scope.name+'/real/'):
+      real_data = ops.convert_to_tensor(real_data)
+      (discriminator_real_outputs, discriminator_real_classification_logits
+      ) = _validate_acgan_discriminator_outputs(
+          discriminator_fn(real_data, generator_inputs))
   if check_shapes:
     if not generated_data.shape.is_compatible_with(real_data.shape):
       raise ValueError(
@@ -325,6 +307,76 @@ def acgan_model(
       discriminator_fn, one_hot_labels,
       discriminator_real_classification_logits,
       discriminator_gen_classification_logits)
+
+
+def cyclegan_model(
+    # Lambdas defining models.
+    generator_fn,
+    discriminator_fn,
+    # data X and Y.
+    data_x,
+    data_y,
+    # Optional scopes.
+    generator_scope='Generator',
+    discriminator_scope='Discriminator',
+    model_x2y_scope='ModelX2Y',
+    model_y2x_scope='ModelY2X',
+    # Options.
+    check_shapes=True):
+  """Returns a CycleGAN model outputs and variables.
+
+  See https://arxiv.org/abs/1703.10593 for more details.
+
+  Args:
+    generator_fn: A python lambda that takes `data_x` or `data_y` as inputs and
+      returns the outputs of the GAN generator.
+    discriminator_fn: A python lambda that takes `real_data`/`generated data`
+      and `generator_inputs`. Outputs a Tensor in the range [-inf, inf].
+    data_x: A `Tensor` of dataset X. Must be the same shape as `data_y`.
+    data_y: A `Tensor` of dataset Y. Must be the same shape as `data_x`.
+    generator_scope: Optional generator variable scope. Useful if you want to
+      reuse a subgraph that has already been created. Defaults to 'Generator'.
+    discriminator_scope: Optional discriminator variable scope. Useful if you
+      want to reuse a subgraph that has already been created. Defaults to
+      'Discriminator'.
+    model_x2y_scope: Optional variable scope for model x2y variables. Defaults
+      to 'ModelX2Y'.
+    model_y2x_scope: Optional variable scope for model y2x variables. Defaults
+      to 'ModelY2X'.
+    check_shapes: If `True`, check that generator produces Tensors that are the
+      same shape as `data_x` (`data_y`). Otherwise, skip this check.
+
+  Returns:
+    A `CycleGANModel` namedtuple.
+
+  Raises:
+    ValueError: If `check_shapes` is True and `data_x` or the generator output
+      does not have the same shape as `data_y`.
+  """
+
+  # Create models.
+  def _define_partial_model(input_data, output_data):
+    return gan_model(
+        generator_fn=generator_fn,
+        discriminator_fn=discriminator_fn,
+        real_data=output_data,
+        generator_inputs=input_data,
+        generator_scope=generator_scope,
+        discriminator_scope=discriminator_scope,
+        check_shapes=check_shapes)
+
+  with variable_scope.variable_scope(model_x2y_scope):
+    model_x2y = _define_partial_model(data_x, data_y)
+  with variable_scope.variable_scope(model_y2x_scope):
+    model_y2x = _define_partial_model(data_y, data_x)
+
+  with variable_scope.variable_scope(model_y2x.generator_scope, reuse=True):
+    reconstructed_x = model_y2x.generator_fn(model_x2y.generated_data)
+  with variable_scope.variable_scope(model_x2y.generator_scope, reuse=True):
+    reconstructed_y = model_x2y.generator_fn(model_y2x.generated_data)
+
+  return namedtuples.CycleGANModel(model_x2y, model_y2x, reconstructed_x,
+                                   reconstructed_y)
 
 
 def _validate_aux_loss_weight(aux_loss_weight, name='aux_loss_weight'):
@@ -349,6 +401,56 @@ def _use_aux_loss(aux_loss_weight):
     return False
 
 
+def _tensor_pool_adjusted_model(model, tensor_pool_fn):
+  """Adjusts model using `tensor_pool_fn`.
+
+  Args:
+    model: A GANModel tuple.
+    tensor_pool_fn: A function that takes (generated_data, generator_inputs),
+      stores them in an internal pool and returns a previously stored
+      (generated_data, generator_inputs) with some probability. For example
+      tfgan.features.tensor_pool.
+
+  Returns:
+    A new GANModel tuple where discriminator outputs are adjusted by taking
+    pooled generator outputs as inputs. Returns the original model if
+    `tensor_pool_fn` is None.
+
+  Raises:
+    ValueError: If tensor pool does not support the `model`.
+  """
+  if tensor_pool_fn is None:
+    return model
+
+  pooled_generated_data, pooled_generator_inputs = tensor_pool_fn(
+      (model.generated_data, model.generator_inputs))
+
+  if isinstance(model, namedtuples.GANModel):
+    with variable_scope.variable_scope(model.discriminator_scope, reuse=True):
+      dis_gen_outputs = model.discriminator_fn(pooled_generated_data,
+                                               pooled_generator_inputs)
+    return model._replace(discriminator_gen_outputs=dis_gen_outputs)
+  elif isinstance(model, namedtuples.ACGANModel):
+    with variable_scope.variable_scope(model.discriminator_scope, reuse=True):
+      (dis_pooled_gen_outputs,
+       dis_pooled_gen_classification_logits) = model.discriminator_fn(
+           pooled_generated_data, pooled_generator_inputs)
+    return model._replace(
+        discriminator_gen_outputs=dis_pooled_gen_outputs,
+        discriminator_gen_classification_logits=
+        dis_pooled_gen_classification_logits)
+  elif isinstance(model, namedtuples.InfoGANModel):
+    with variable_scope.variable_scope(model.discriminator_scope, reuse=True):
+      (dis_pooled_gen_outputs,
+       pooled_predicted_distributions) = model.discriminator_and_aux_fn(
+           pooled_generated_data, pooled_generator_inputs)
+    return model._replace(
+        discriminator_gen_outputs=dis_pooled_gen_outputs,
+        predicted_distributions=pooled_predicted_distributions)
+  else:
+    raise ValueError('Tensor pool does not support `model`: %s.' % type(model))
+
+
 def gan_loss(
     # GANModel.
     model,
@@ -361,6 +463,7 @@ def gan_loss(
     mutual_information_penalty_weight=None,
     aux_cond_generator_weight=None,
     aux_cond_discriminator_weight=None,
+    tensor_pool_fn=None,
     # Options.
     add_summaries=True):
   """Returns losses necessary to train generator and discriminator.
@@ -386,6 +489,10 @@ def gan_loss(
       https://arxiv.org/abs/1610.09585
     aux_cond_discriminator_weight: If not None: add a classification loss as in
       https://arxiv.org/abs/1610.09585
+    tensor_pool_fn: A function that takes (generated_data, generator_inputs),
+      stores them in an internal pool and returns previous stored
+      (generated_data, generator_inputs). For example
+      `tf.gan.features.tensor_pool`. Defaults to None (not using tensor pool).
     add_summaries: Whether or not to add summaries for the losses.
 
   Returns:
@@ -425,7 +532,9 @@ def gan_loss(
 
   # Create standard losses.
   gen_loss = generator_loss_fn(model, add_summaries=add_summaries)
-  dis_loss = discriminator_loss_fn(model, add_summaries=add_summaries)
+  dis_loss = discriminator_loss_fn(
+      _tensor_pool_adjusted_model(model, tensor_pool_fn),
+      add_summaries=add_summaries)
 
   # Add optional extra losses.
   if _use_aux_loss(gradient_penalty_weight):
@@ -445,7 +554,7 @@ def gan_loss(
     ac_disc_loss = tfgan_losses.acgan_discriminator_loss(
         model, add_summaries=add_summaries)
     dis_loss += aux_cond_discriminator_weight * ac_disc_loss
-  # Gathers auxilliary losses.
+  # Gathers auxiliary losses.
   if model.generator_scope:
     gen_reg_loss = losses.get_regularization_loss(model.generator_scope.name)
   else:
@@ -457,6 +566,69 @@ def gan_loss(
     dis_reg_loss = 0
 
   return namedtuples.GANLoss(gen_loss + gen_reg_loss, dis_loss + dis_reg_loss)
+
+
+def cyclegan_loss(
+    model,
+    # Loss functions.
+    generator_loss_fn=tfgan_losses.least_squares_generator_loss,
+    discriminator_loss_fn=tfgan_losses.least_squares_discriminator_loss,
+    # Auxiliary losses.
+    cycle_consistency_loss_fn=tfgan_losses.cycle_consistency_loss,
+    cycle_consistency_loss_weight=10.0,
+    # Options
+    **kwargs):
+  """Returns the losses for a `CycleGANModel`.
+
+  See https://arxiv.org/abs/1703.10593 for more details.
+
+  Args:
+    model: A `CycleGANModel` namedtuple.
+    generator_loss_fn: The loss function on the generator. Takes a `GANModel`
+      named tuple.
+    discriminator_loss_fn: The loss function on the discriminator. Takes a
+      `GANModel` namedtuple.
+    cycle_consistency_loss_fn: The cycle consistency loss function. Takes a
+      `CycleGANModel` namedtuple.
+    cycle_consistency_loss_weight: A non-negative Python number or a scalar
+      `Tensor` indicating how much to weigh the cycle consistency loss.
+    **kwargs: Keyword args to pass directly to `gan_loss` to construct the loss
+      for each partial model of `model`.
+
+  Returns:
+    A `CycleGANLoss` namedtuple.
+
+  Raises:
+    ValueError: If `model` is not a `CycleGANModel` namedtuple.
+  """
+  # Sanity checks.
+  if not isinstance(model, namedtuples.CycleGANModel):
+    raise ValueError(
+        '`model` must be a `CycleGANModel`. Instead, was %s.' % type(model))
+
+  # Defines cycle consistency loss.
+  cycle_consistency_loss = cycle_consistency_loss_fn(
+      model, add_summaries=kwargs.get('add_summaries', True))
+  cycle_consistency_loss_weight = _validate_aux_loss_weight(
+      cycle_consistency_loss_weight, 'cycle_consistency_loss_weight')
+  aux_loss = cycle_consistency_loss_weight * cycle_consistency_loss
+
+  # Defines losses for each partial model.
+  def _partial_loss(partial_model):
+    partial_loss = gan_loss(
+        partial_model,
+        generator_loss_fn=generator_loss_fn,
+        discriminator_loss_fn=discriminator_loss_fn,
+        **kwargs)
+    return partial_loss._replace(
+        generator_loss=partial_loss.generator_loss + aux_loss)
+
+  with ops.name_scope('cyclegan_loss_x2y'):
+    loss_x2y = _partial_loss(model.model_x2y)
+  with ops.name_scope('cyclegan_loss_y2x'):
+    loss_y2x = _partial_loss(model.model_y2x)
+
+  return namedtuples.CycleGANLoss(loss_x2y, loss_y2x)
 
 
 def _get_update_ops(kwargs, gen_scope, dis_scope, check_for_unused_ops=True):
@@ -498,11 +670,10 @@ def _get_update_ops(kwargs, gen_scope, dis_scope, check_for_unused_ops=True):
 
 
 def gan_train_ops(
-    model,  # GANModel
-    loss,  # GANLoss
+    model,
+    loss,
     generator_optimizer,
     discriminator_optimizer,
-    # Optional check flags.
     check_for_unused_update_ops=True,
     # Optional args to pass directly to the `create_train_op`.
     **kwargs):
@@ -527,6 +698,24 @@ def gan_train_ops(
     A GANTrainOps tuple of (generator_train_op, discriminator_train_op) that can
     be used to train a generator/discriminator pair.
   """
+  if isinstance(model, namedtuples.CycleGANModel):
+    saved_params = locals()
+    saved_params.pop('model', None)
+    saved_params.pop('loss', None)
+    kwargs = saved_params.pop('kwargs', {})
+    saved_params.update(kwargs)
+    with ops.name_scope('cyclegan_x2y_train'):
+      train_ops_x2y = gan_train_ops(model.model_x2y, loss.loss_x2y,
+                                    **saved_params)
+    with ops.name_scope('cyclegan_y2x_train'):
+      train_ops_y2x = gan_train_ops(model.model_y2x, loss.loss_y2x,
+                                    **saved_params)
+    return namedtuples.GANTrainOps(
+        (train_ops_x2y.generator_train_op, train_ops_y2x.generator_train_op),
+        (train_ops_x2y.discriminator_train_op,
+         train_ops_y2x.discriminator_train_op),
+        training_util.get_or_create_global_step().assign_add(1))
+
   # Create global step increment op.
   global_step = training_util.get_or_create_global_step()
   global_step_inc = global_step.assign_add(1)
@@ -549,7 +738,7 @@ def gan_train_ops(
     generator_global_step = variable_scope.get_variable(
         'dummy_global_step_generator',
         shape=[],
-        dtype=dtypes.int64,
+        dtype=global_step.dtype.base_dtype,
         initializer=init_ops.zeros_initializer(),
         trainable=False,
         collections=[ops.GraphKeys.GLOBAL_VARIABLES])
@@ -570,7 +759,7 @@ def gan_train_ops(
     discriminator_global_step = variable_scope.get_variable(
         'dummy_global_step_discriminator',
         shape=[],
-        dtype=dtypes.int64,
+        dtype=global_step.dtype.base_dtype,
         initializer=init_ops.zeros_initializer(),
         trainable=False,
         collections=[ops.GraphKeys.GLOBAL_VARIABLES])
@@ -802,3 +991,40 @@ def get_sequential_train_steps(
     return gen_loss + dis_loss, should_stop
 
   return sequential_train_steps
+
+
+# Helpers
+
+
+def _convert_tensor_or_l_or_d(tensor_or_l_or_d):
+  """Convert input, list of inputs, or dictionary of inputs to Tensors."""
+  if isinstance(tensor_or_l_or_d, (list, tuple)):
+    return [ops.convert_to_tensor(x) for x in tensor_or_l_or_d]
+  elif isinstance(tensor_or_l_or_d, dict):
+    return {k: ops.convert_to_tensor(v) for k, v in tensor_or_l_or_d.items()}
+  else:
+    return ops.convert_to_tensor(tensor_or_l_or_d)
+
+
+def _validate_distributions(distributions_l, noise_l):
+  if not isinstance(distributions_l, (tuple, list)):
+    raise ValueError('`predicted_distributions` must be a list. Instead, found '
+                     '%s.' % type(distributions_l))
+  for dist in distributions_l:
+    if not isinstance(dist, ds.Distribution):
+      raise ValueError('Every element in `predicted_distributions` must be a '
+                       '`tf.Distribution`. Instead, found %s.' % type(dist))
+  if len(distributions_l) != len(noise_l):
+    raise ValueError('Length of `predicted_distributions` %i must be the same '
+                     'as the length of structured noise %i.' %
+                     (len(distributions_l), len(noise_l)))
+
+
+def _validate_acgan_discriminator_outputs(discriminator_output):
+  try:
+    a, b = discriminator_output
+  except (TypeError, ValueError):
+    raise TypeError(
+        'A discriminator function for ACGAN must output a tuple '
+        'consisting of (discrimination logits, classification logits).')
+  return a, b

@@ -1,6 +1,10 @@
 licenses(["notice"])  # Apache 2.0
 
-load("//tensorflow:tensorflow.bzl", "tf_cuda_library")
+load("//tensorflow:tensorflow.bzl", "tf_cuda_library", "tf_cc_test")
+load(
+    "//tensorflow/core:platform/default/build_config.bzl",
+    "tf_protos_grappler",
+)
 
 filegroup(
     name = "all_files",
@@ -16,7 +20,10 @@ filegroup(
 
 filegroup(
     name = "graph_properties_testdata",
-    srcs = glob(["graph_properties_testdata/*.pbtxt"]),
+    srcs = glob([
+        "graph_properties_testdata/*.pbtxt",
+        "graph_properties_testdata/*.pbtxt.html",
+    ]),
     visibility = ["//visibility:public"],
 )
 
@@ -34,6 +41,7 @@ tf_proto_library(
     name = "op_performance_data",
     srcs = ["op_performance_data.proto"],
     cc_api_version = 2,
+    default_header = True,
     protodeps = tf_additional_all_protos(),
     visibility = ["//visibility:public"],
 )
@@ -44,17 +52,17 @@ cc_library(
     hdrs = ["graph_properties.h"],
     visibility = ["//visibility:public"],
     deps = [
-        ":op_performance_data_cc",
         ":utils",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler:utils",
         "//tensorflow/core/grappler/clusters:cluster",
-    ],
+    ] + tf_protos_grappler(),
 )
 
-cc_test(
+tf_cc_test(
     name = "graph_properties_test",
     srcs = ["graph_properties_test.cc"],
     args = ["--heap_check=local"],  # The GPU tracer leaks memory
@@ -83,20 +91,24 @@ cc_library(
     hdrs = ["graph_memory.h"],
     visibility = ["//visibility:public"],
     deps = [
+        ":cost_estimator",
         ":graph_properties",
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler:utils",
         "//tensorflow/core/grappler/clusters:cluster",
+        "//tensorflow/core/grappler/clusters:virtual_cluster",
     ],
 )
 
-cc_test(
+tf_cc_test(
     name = "graph_memory_test",
     srcs = ["graph_memory_test.cc"],
     args = ["--heap_check=local"],  # The GPU tracer leaks memory
     deps = [
         ":graph_memory",
+        "//tensorflow/cc:cc_ops",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core/grappler:grappler_item",
@@ -111,7 +123,7 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-cc_test(
+tf_cc_test(
     name = "robust_stats_test",
     srcs = ["robust_stats_test.cc"],
     deps = [
@@ -127,19 +139,18 @@ tf_cuda_library(
     hdrs = ["utils.h"],
     visibility = ["//visibility:public"],
     deps = [
-        ":op_performance_data_cc",
-        "//tensorflow/core:core_cpu_base",
+        "//third_party/eigen3",
         "//tensorflow/core:framework",
+        "//tensorflow/core:graph",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_proto_parsing",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/grappler:utils",
         "//tensorflow/core/grappler/clusters:utils",
-        "//third_party/eigen3",
-    ],
+    ] + tf_protos_grappler(),
 )
 
-cc_test(
+tf_cc_test(
     name = "utils_test",
     srcs = ["utils_test.cc"],
     visibility = ["//visibility:public"],
@@ -180,7 +191,7 @@ cc_library(
     ],
 )
 
-cc_test(
+tf_cc_test(
     name = "virtual_placer_test",
     srcs = ["virtual_placer_test.cc"],
     deps = [
@@ -195,12 +206,22 @@ cc_test(
 )
 
 cc_library(
+    name = "op_context",
+    hdrs = ["op_context.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tensorflow/core:protos_all_cc",
+    ] + tf_protos_grappler(),
+)
+
+cc_library(
     name = "virtual_scheduler",
     srcs = ["virtual_scheduler.cc"],
     hdrs = ["virtual_scheduler.h"],
     visibility = ["//visibility:public"],
     deps = [
         ":graph_properties",
+        ":op_context",
         ":utils",
         ":virtual_placer",
         "//tensorflow/core:framework",
@@ -214,7 +235,7 @@ cc_library(
     ],
 )
 
-cc_test(
+tf_cc_test(
     name = "virtual_scheduler_test",
     srcs = ["virtual_scheduler_test.cc"],
     deps = [
@@ -256,15 +277,15 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":cost_estimator",
-        ":op_performance_data_cc",
+        ":op_context",
+        "//third_party/eigen3",
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/grappler/clusters:utils",
-        "//third_party/eigen3",
-    ],
+    ] + tf_protos_grappler(),
 )
 
-cc_test(
+tf_cc_test(
     name = "op_level_cost_estimator_test",
     srcs = ["op_level_cost_estimator_test.cc"],
     deps = [
@@ -285,18 +306,18 @@ cc_library(
         ":cost_estimator",
         ":graph_properties",
         ":op_level_cost_estimator",
-        ":op_performance_data_cc",
         ":utils",
         ":virtual_placer",
         ":virtual_scheduler",
         "//tensorflow/core:core_cpu_base",
+        "//tensorflow/core:graph",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/grappler:grappler_item",
-    ],
+    ] + tf_protos_grappler(),
 )
 
-cc_test(
+tf_cc_test(
     name = "analytical_cost_estimator_test",
     srcs = ["analytical_cost_estimator_test.cc"],
     deps = [

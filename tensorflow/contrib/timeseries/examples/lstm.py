@@ -18,6 +18,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
 from os import path
 
 import numpy
@@ -80,18 +81,19 @@ class _LSTMModel(ts_model.SequentialTimeSeriesModel):
       input_statistics: A math_utils.InputStatistics object.
     """
     super(_LSTMModel, self).initialize_graph(input_statistics=input_statistics)
-    self._lstm_cell = tf.nn.rnn_cell.LSTMCell(num_units=self._num_units)
-    # Create templates so we don't have to worry about variable reuse.
-    self._lstm_cell_run = tf.make_template(
-        name_="lstm_cell",
-        func_=self._lstm_cell,
-        create_scope_now_=True)
-    # Transforms LSTM output into mean predictions.
-    self._predict_from_lstm_output = tf.make_template(
-        name_="predict_from_lstm_output",
-        func_=
-        lambda inputs: tf.layers.dense(inputs=inputs, units=self.num_features),
-        create_scope_now_=True)
+    with tf.variable_scope("", use_resource=True):
+      # Use ResourceVariables to avoid race conditions.
+      self._lstm_cell = tf.nn.rnn_cell.LSTMCell(num_units=self._num_units)
+      # Create templates so we don't have to worry about variable reuse.
+      self._lstm_cell_run = tf.make_template(
+          name_="lstm_cell",
+          func_=self._lstm_cell,
+          create_scope_now_=True)
+      # Transforms LSTM output into mean predictions.
+      self._predict_from_lstm_output = tf.make_template(
+          name_="predict_from_lstm_output",
+          func_=functools.partial(tf.layers.dense, units=self.num_features),
+          create_scope_now_=True)
 
   def get_start_state(self):
     """Return initial state for the time series model."""
@@ -105,16 +107,6 @@ class _LSTMModel(ts_model.SequentialTimeSeriesModel):
         [tf.squeeze(state_element, axis=0)
          for state_element
          in self._lstm_cell.zero_state(batch_size=1, dtype=self.dtype)])
-
-  def _transform(self, data):
-    """Normalize data based on input statistics to encourage stable training."""
-    mean, variance = self._input_statistics.overall_feature_moments
-    return (data - mean) / variance
-
-  def _de_transform(self, data):
-    """Transform data back to the input scale."""
-    mean, variance = self._input_statistics.overall_feature_moments
-    return data * variance + mean
 
   def _filtering_step(self, current_times, current_values, state, predictions):
     """Update model state based on observations.
@@ -140,7 +132,10 @@ class _LSTMModel(ts_model.SequentialTimeSeriesModel):
     state_from_time, prediction, lstm_state = state
     with tf.control_dependencies(
         [tf.assert_equal(current_times, state_from_time)]):
-      transformed_values = self._transform(current_values)
+      # Subtract the mean and divide by the variance of the series.  Slightly
+      # more efficient if done for a whole window (using the normalize_features
+      # argument to SequentialTimeSeriesModel).
+      transformed_values = self._scale_data(current_values)
       # Use mean squared error across features for the loss.
       predictions["loss"] = tf.reduce_mean(
           (prediction - transformed_values) ** 2, axis=-1)
@@ -156,7 +151,7 @@ class _LSTMModel(ts_model.SequentialTimeSeriesModel):
         inputs=previous_observation_or_prediction, state=lstm_state)
     next_prediction = self._predict_from_lstm_output(lstm_output)
     new_state_tuple = (current_times, next_prediction, new_lstm_state)
-    return new_state_tuple, {"mean": self._de_transform(next_prediction)}
+    return new_state_tuple, {"mean": self._scale_back_data(next_prediction)}
 
   def _imputation_step(self, current_times, state):
     """Advance model state across a gap."""
@@ -172,12 +167,13 @@ class _LSTMModel(ts_model.SequentialTimeSeriesModel):
         "Exogenous inputs are not implemented for this example.")
 
 
-def train_and_predict(csv_file_name=_DATA_FILE, training_steps=200):
+def train_and_predict(
+    csv_file_name=_DATA_FILE, training_steps=200, estimator_config=None):
   """Train and predict using a custom time series model."""
   # Construct an Estimator from our LSTM model.
   estimator = ts_estimators.TimeSeriesRegressor(
       model=_LSTMModel(num_features=5, num_units=128),
-      optimizer=tf.train.AdamOptimizer(0.001))
+      optimizer=tf.train.AdamOptimizer(0.001), config=estimator_config)
   reader = tf.contrib.timeseries.CSVReader(
       csv_file_name,
       column_names=((tf.contrib.timeseries.TrainEvalFeatures.TIMES,)

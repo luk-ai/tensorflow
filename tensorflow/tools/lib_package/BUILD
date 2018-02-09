@@ -4,6 +4,7 @@
 package(default_visibility = ["//visibility:private"])
 
 load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
+load("//tensorflow:tensorflow.bzl", "tf_binary_additional_srcs")
 load("//third_party/mkl:build_defs.bzl", "if_mkl")
 
 genrule(
@@ -42,11 +43,22 @@ pkg_tar(
     # are resolved, otherwise these rules break when built
     # with Python 3.
     tags = ["manual"],
+    deps = [":common_deps"],
+)
+
+# Shared objects that all TensorFlow libraries depend on.
+pkg_tar(
+    name = "common_deps",
+    files = tf_binary_additional_srcs(),
+    tags = ["manual"],
 )
 
 pkg_tar(
     name = "cheaders",
-    files = ["//tensorflow/c:headers"],
+    files = [
+        "//tensorflow/c:headers",
+        "//tensorflow/c/eager:headers",
+    ],
     package_dir = "include/tensorflow/c",
     # Mark as "manual" till
     # https://github.com/bazelbuild/bazel/issues/2352
@@ -66,6 +78,7 @@ pkg_tar(
     # are resolved, otherwise these rules break when built
     # with Python 3.
     tags = ["manual"],
+    deps = [":common_deps"],
 )
 
 pkg_tar(
@@ -86,6 +99,7 @@ genrule(
         "//third_party/hadoop:LICENSE.txt",
         "//third_party/eigen3:LICENSE",
         "//third_party/fft2d:LICENSE",
+        "@aws//:LICENSE",
         "@boringssl//:LICENSE",
         "@com_googlesource_code_re2//:LICENSE",
         "@cub_archive//:LICENSE.TXT",
@@ -99,8 +113,10 @@ genrule(
         "@jemalloc//:COPYING",
         "@jpeg//:LICENSE.md",
         "@libxsmm_archive//:LICENSE",
+        "@llvm//:LICENSE.TXT",
         "@lmdb//:LICENSE",
         "@local_config_sycl//sycl:LICENSE.text",
+        "@nasm//:LICENSE",
         "@nsync//:LICENSE",
         "@png_archive//:LICENSE",
         "@protobuf_archive//:LICENSE",
@@ -121,6 +137,7 @@ genrule(
         "//third_party/hadoop:LICENSE.txt",
         "//third_party/eigen3:LICENSE",
         "//third_party/fft2d:LICENSE",
+        "@aws//:LICENSE",
         "@boringssl//:LICENSE",
         "@com_googlesource_code_re2//:LICENSE",
         "@cub_archive//:LICENSE.TXT",
@@ -136,6 +153,7 @@ genrule(
         "@libxsmm_archive//:LICENSE",
         "@lmdb//:LICENSE",
         "@local_config_sycl//sycl:LICENSE.text",
+        "@nasm//:LICENSE",
         "@nsync//:LICENSE",
         "@png_archive//:LICENSE",
         "@protobuf_archive//:LICENSE",
