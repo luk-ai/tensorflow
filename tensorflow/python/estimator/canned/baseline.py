@@ -59,6 +59,7 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops.losses import losses
 from tensorflow.python.training import training_util
+from tensorflow.python.util.tf_export import tf_export
 
 # The default learning rate of 0.3 is a historical artifact of the initial
 # implementation, but seems a reasonable choice.
@@ -173,6 +174,7 @@ def _baseline_model_fn(features, labels, mode, head, optimizer,
       train_op_fn=train_op_fn)
 
 
+@tf_export('estimator.BaselineClassifier')
 class BaselineClassifier(estimator.Estimator):
   """A classifier that can establish a simple baseline.
 
@@ -275,6 +277,7 @@ class BaselineClassifier(estimator.Estimator):
         config=config)
 
 
+@tf_export('estimator.BaselineRegressor')
 class BaselineRegressor(estimator.Estimator):
   """A regressor that can establish a simple baseline.
 
@@ -341,7 +344,7 @@ class BaselineRegressor(estimator.Estimator):
       A `BaselineRegressor` estimator.
     """
 
-    head = head_lib._regression_head_with_mean_squared_error_loss(  # pylint: disable=protected-access
+    head = head_lib._regression_head(  # pylint: disable=protected-access
         label_dimension=label_dimension,
         weight_column=weight_column,
         loss_reduction=loss_reduction)

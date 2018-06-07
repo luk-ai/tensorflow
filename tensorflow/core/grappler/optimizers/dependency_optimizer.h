@@ -29,7 +29,7 @@ namespace grappler {
 // optimizations, such as removing nodes that are effectively noops.
 class DependencyOptimizer : public GraphOptimizer {
  public:
-  DependencyOptimizer() : opt_level_(RewriterConfig::ON) {}
+  DependencyOptimizer() {}
   explicit DependencyOptimizer(RewriterConfig::Toggle opt_level)
       : opt_level_(opt_level) {}
   ~DependencyOptimizer() override {}
@@ -52,8 +52,6 @@ class DependencyOptimizer : public GraphOptimizer {
   void CleanControlInputs();
   // Builds a map from the &optimized_graph_->node(i) to i.
   void BuildNodeToIdx();
-  // Removes the given set of nodes from the graph.
-  void DeleteNodes(const std::set<int>& nodes_to_delete);
   // Tries to optimize the node with the given index, possibly additional
   // optimizations by inserting nodes in nodes_to_simplify, and pruning nodes by
   // inserting them in nodes_to_delete.
@@ -64,6 +62,9 @@ class DependencyOptimizer : public GraphOptimizer {
   Status TransitiveReduction();
   // Main driver of dependency optimizations.
   Status OptimizeDependencies();
+  // Replaces multiple cross-device control edges from the same device with a
+  // single control edge.
+  void GroupCrossDeviceControlEdges();
 
   RewriterConfig::Toggle opt_level_;
   bool fetch_nodes_known_;

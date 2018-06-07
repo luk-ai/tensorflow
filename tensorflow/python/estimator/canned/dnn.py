@@ -32,7 +32,7 @@ from tensorflow.python.ops import partitioned_variables
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops.losses import losses
 from tensorflow.python.summary import summary
-from tensorflow.python.training import training_util
+from tensorflow.python.util.tf_export import tf_export
 
 # The default learning rate of 0.05 is a historical artifact of the initial
 # implementation, but seems a reasonable choice.
@@ -126,7 +126,8 @@ def _dnn_model_fn(features,
                   activation_fn=nn.relu,
                   dropout=None,
                   input_layer_partitioner=None,
-                  config=None):
+                  config=None,
+                  tpu_estimator_spec=False):
   """Deep Neural Net model_fn.
 
   Args:
@@ -147,11 +148,11 @@ def _dnn_model_fn(features,
     input_layer_partitioner: Partitioner for input layer. Defaults
       to `min_max_variable_partitioner` with `min_slice_size` 64 << 20.
     config: `RunConfig` object to configure the runtime settings.
+    tpu_estimator_spec: Whether to return a `_TPUEstimatorSpec` or
+      or `model_fn.EstimatorSpec` instance.
 
   Returns:
-    predictions: A dict of `Tensor` objects.
-    loss: A scalar containing the loss of the step.
-    train_op: The op for training.
+    An `EstimatorSpec` instance.
 
   Raises:
     ValueError: If features has the wrong type.
@@ -184,20 +185,23 @@ def _dnn_model_fn(features,
         input_layer_partitioner=input_layer_partitioner)
     logits = logit_fn(features=features, mode=mode)
 
-    def _train_op_fn(loss):
-      """Returns the op to optimize the loss."""
-      return optimizer.minimize(
-          loss,
-          global_step=training_util.get_global_step())
+    if tpu_estimator_spec:
+      return head._create_tpu_estimator_spec(  # pylint: disable=protected-access
+          features=features,
+          mode=mode,
+          labels=labels,
+          optimizer=optimizer,
+          logits=logits)
+    else:
+      return head.create_estimator_spec(
+          features=features,
+          mode=mode,
+          labels=labels,
+          optimizer=optimizer,
+          logits=logits)
 
-    return head.create_estimator_spec(
-        features=features,
-        mode=mode,
-        labels=labels,
-        train_op_fn=_train_op_fn,
-        logits=logits)
 
-
+@tf_export('estimator.DNNClassifier')
 class DNNClassifier(estimator.Estimator):
   """A classifier for TensorFlow DNN models.
 
@@ -327,17 +331,8 @@ class DNNClassifier(estimator.Estimator):
       loss_reduction: One of `tf.losses.Reduction` except `NONE`. Describes how
         to reduce training loss over batch. Defaults to `SUM`.
     """
-    if n_classes == 2:
-      head = head_lib._binary_logistic_head_with_sigmoid_cross_entropy_loss(  # pylint: disable=protected-access
-          weight_column=weight_column,
-          label_vocabulary=label_vocabulary,
-          loss_reduction=loss_reduction)
-    else:
-      head = head_lib._multi_class_head_with_softmax_cross_entropy_loss(  # pylint: disable=protected-access
-          n_classes, weight_column=weight_column,
-          label_vocabulary=label_vocabulary,
-          loss_reduction=loss_reduction)
-
+    head = head_lib._binary_logistic_or_multi_class_head(  # pylint: disable=protected-access
+        n_classes, weight_column, label_vocabulary, loss_reduction)
     def _model_fn(features, labels, mode, config):
       """Call the defined shared _dnn_model_fn."""
       return _dnn_model_fn(
@@ -358,6 +353,7 @@ class DNNClassifier(estimator.Estimator):
         warm_start_from=warm_start_from)
 
 
+@tf_export('estimator.DNNRegressor')
 class DNNRegressor(estimator.Estimator):
   """A regressor for TensorFlow DNN models.
 
@@ -487,8 +483,7 @@ class DNNRegressor(estimator.Estimator):
           features=features,
           labels=labels,
           mode=mode,
-          head=head_lib.  # pylint: disable=protected-access
-          _regression_head_with_mean_squared_error_loss(
+          head=head_lib._regression_head(  # pylint: disable=protected-access
               label_dimension=label_dimension, weight_column=weight_column,
               loss_reduction=loss_reduction),
           hidden_units=hidden_units,
