@@ -222,6 +222,10 @@ func TestOperationConsumers(t *testing.T) {
 			t.Fatalf("%d. Got op name %q, wanted %q", i, got, want)
 		}
 	}
+
+	if b.Consumers() != nil {
+		t.Fatalf("expected %+v to have no consumers", b)
+	}
 }
 
 func forceGC() {

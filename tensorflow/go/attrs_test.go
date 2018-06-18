@@ -21,6 +21,18 @@ import (
 	"testing"
 )
 
+var attrTypes = []int{
+	0,
+	1,
+	2,
+	3,
+	4,
+	5,
+	6,
+	7,
+	8,
+}
+
 func TestOperationAttrs(t *testing.T) {
 	attrs := map[string]interface{}{
 		"dtype": Float,
@@ -42,6 +54,52 @@ func TestOperationAttrs(t *testing.T) {
 		}
 		if !reflect.DeepEqual(out, want) {
 			t.Fatalf("%q: Got %+v, wanted %+v", key, out, want)
+		}
+	}
+}
+
+func TestOperationAttrsEmptyList(t *testing.T) {
+	attrs := map[string]interface{}{
+		"dtype": Float,
+	}
+
+	g := NewGraph()
+	op, err := g.AddOperation(OpSpec{
+		Type:  "Placeholder",
+		Name:  "placeholder",
+		Attrs: attrs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name := "foo"
+	for _, attrType := range attrTypes {
+		if _, err := testListAttribute(op, name, attrType); err == nil {
+			t.Fatalf("expected error; got nil")
+		}
+	}
+}
+
+func TestOperationAttrsEmptyScalar(t *testing.T) {
+	attrs := map[string]interface{}{
+		"dtype": Float,
+	}
+
+	g := NewGraph()
+	op, err := g.AddOperation(OpSpec{
+		Type:  "Placeholder",
+		Name:  "placeholder",
+		Attrs: attrs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	name := "foo"
+	for _, attrType := range attrTypes {
+		if _, err := testScalarAttribute(op, name, attrType); err == nil {
+			t.Fatalf("expected error; got nil")
 		}
 	}
 }

@@ -33,7 +33,8 @@ func makeCShape(shape []C.int64_t) Shape {
 	return s
 }
 
-// Attr returns the value of an attribute on op.
+// Attr returns the value of an attribute on op. It returns an error if the
+// attribute does not exist.
 func (op *Operation) Attr(name string) (interface{}, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -53,92 +54,95 @@ func (op *Operation) Attr(name string) (interface{}, error) {
 func listAttribute(op *Operation, cname *C.char, meta C.TF_AttrMetadata) (interface{}, error) {
 	status := newStatus()
 
+	// NOTE: this function allocates 1 extra element in each array passed to C to
+	// allow for passing 0 length arrays.
+
 	switch meta._type {
 	case C.TF_ATTR_STRING:
-		values := make([]unsafe.Pointer, meta.list_size)
-		lengths := make([]C.size_t, meta.list_size)
-		storage := make([]C.char, meta.total_size)
+		values := make([]unsafe.Pointer, meta.list_size+1)
+		lengths := make([]C.size_t, meta.list_size+1)
+		storage := make([]C.char, meta.total_size+1)
 		C.TF_OperationGetAttrStringList(op.c, cname, &values[0], &lengths[0], C.int(meta.list_size), unsafe.Pointer(&storage[0]), C.size_t(meta.total_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		list := make([]string, meta.list_size)
-		for i, val := range values {
+		for i, val := range values[:meta.list_size] {
 			length := lengths[i]
 			list[i] = C.GoStringN((*C.char)(val), C.int(length))
 		}
 		return list, nil
 
 	case C.TF_ATTR_INT:
-		list := make([]C.int64_t, meta.list_size)
+		list := make([]C.int64_t, meta.list_size+1)
 		C.TF_OperationGetAttrIntList(op.c, cname, &list[0], C.int(meta.list_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		vals := make([]int64, meta.list_size)
-		for i, val := range list {
+		for i, val := range list[:meta.list_size] {
 			vals[i] = int64(val)
 		}
 		return vals, nil
 
 	case C.TF_ATTR_FLOAT:
-		list := make([]C.float, meta.list_size)
+		list := make([]C.float, meta.list_size+1)
 		C.TF_OperationGetAttrFloatList(op.c, cname, &list[0], C.int(meta.list_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		vals := make([]float32, meta.list_size)
-		for i, val := range list {
+		for i, val := range list[:meta.list_size] {
 			vals[i] = float32(val)
 		}
 		return vals, nil
 
 	case C.TF_ATTR_BOOL:
-		list := make([]C.uchar, meta.list_size)
+		list := make([]C.uchar, meta.list_size+1)
 		C.TF_OperationGetAttrBoolList(op.c, cname, &list[0], C.int(meta.list_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		vals := make([]bool, meta.list_size)
-		for i, val := range list {
+		for i, val := range list[:meta.list_size] {
 			vals[i] = val == 1
 		}
 		return vals, nil
 
 	case C.TF_ATTR_TYPE:
-		list := make([]C.TF_DataType, meta.list_size)
+		list := make([]C.TF_DataType, meta.list_size+1)
 		C.TF_OperationGetAttrTypeList(op.c, cname, &list[0], C.int(meta.list_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		vals := make([]DataType, meta.list_size)
-		for i, val := range list {
+		for i, val := range list[:meta.list_size] {
 			vals[i] = DataType(val)
 		}
 		return vals, nil
 
 	case C.TF_ATTR_TENSOR:
-		list := make([]*C.TF_Tensor, meta.list_size)
+		list := make([]*C.TF_Tensor, meta.list_size+1)
 		C.TF_OperationGetAttrTensorList(op.c, cname, &list[0], C.int(meta.list_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		vals := make([]*Tensor, meta.list_size)
-		for i, t := range list {
+		for i, t := range list[:meta.list_size] {
 			vals[i] = newTensorFromC(t)
 		}
 		return vals, nil
 
 	case C.TF_ATTR_SHAPE:
-		dims := make([]*C.int64_t, meta.list_size)
-		numDims := make([]C.int, meta.list_size)
-		storage := make([]C.int64_t, meta.total_size)
+		dims := make([]*C.int64_t, meta.list_size+1)
+		numDims := make([]C.int, meta.list_size+1)
+		storage := make([]C.int64_t, meta.total_size+1)
 		C.TF_OperationGetAttrShapeList(op.c, cname, &dims[0], &numDims[0], C.int(meta.list_size), &storage[0], C.int(meta.total_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
 		list := make([]Shape, meta.list_size)
-		for i, dim := range dims {
+		for i, dim := range dims[:meta.list_size] {
 			numDim := numDims[i]
 			// If the number of dimensions is unknown, default to empty shape.
 			if numDim < 0 {
@@ -161,7 +165,7 @@ func scalarAttribute(op *Operation, cname *C.char, meta C.TF_AttrMetadata) (inte
 
 	switch meta._type {
 	case C.TF_ATTR_STRING:
-		v := make([]C.char, meta.total_size)
+		v := make([]C.char, meta.total_size+1)
 		C.TF_OperationGetAttrString(op.c, cname, unsafe.Pointer(&v[0]), C.size_t(meta.total_size), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
@@ -198,18 +202,47 @@ func scalarAttribute(op *Operation, cname *C.char, meta C.TF_AttrMetadata) (inte
 
 	case C.TF_ATTR_SHAPE:
 		numDims := meta.total_size
-		// If number of dims is unknown return empty shape to indicate that.
-		if numDims < 0 {
-			return Shape{}, nil
+		maxElems := numDims
+		if maxElems < 0 {
+			maxElems = 0
 		}
-		dims := make([]C.int64_t, numDims)
-		C.TF_OperationGetAttrShape(op.c, cname, (*C.int64_t)(unsafe.Pointer(&dims[0])), C.int(numDims), status.c)
+		dims := make([]C.int64_t, maxElems+1)
+		C.TF_OperationGetAttrShape(op.c, cname, (*C.int64_t)(unsafe.Pointer(&dims[0])), C.int(maxElems), status.c)
 		if err := status.Err(); err != nil {
 			return nil, err
 		}
-		return makeCShape(dims), nil
+		// If number of dims is unknown return empty shape to indicate that.
+		// We do this check to preserve the property of throwing an error on a
+		// non-existant attribute.
+		if numDims < 0 {
+			return Shape{}, nil
+		}
+		if numDims == 0 {
+			return ScalarShape(), nil
+		}
+		return makeCShape(dims[:meta.total_size]), nil
 
 	default:
 		return nil, fmt.Errorf("type %v not supported", meta._type)
 	}
+}
+
+// testListAttribute is required since CGO can't be used from tests.
+func testListAttribute(op *Operation, name string, attrType int) (interface{}, error) {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	return listAttribute(op, cname, C.TF_AttrMetadata{
+		_type: C.TF_AttrType(attrType),
+	})
+}
+
+// testScalarAttribute is required since CGO can't be used from tests.
+func testScalarAttribute(op *Operation, name string, attrType int) (interface{}, error) {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	return scalarAttribute(op, cname, C.TF_AttrMetadata{
+		_type: C.TF_AttrType(attrType),
+	})
 }
